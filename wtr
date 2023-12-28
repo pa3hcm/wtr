@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+
+"""
+This program queries the Rijkswaterstaat Waterinfo API to get data like actual water levels.
+It access the 'Water Webservices API', which is documented here:
+https://rijkswaterstaatdata.nl/waterdata/
+"""
+import json
+import os
+from requests import post
+import sqlite3
+from tempfile import NamedTemporaryFile
+import argparse
+
+
+def get_cache_db_file():
+    # Generate a file name for the cache database which is unique for the current user
+    cache_db_file = '/tmp/.wtr_cache_' + os.getlogin() + '.db'
+    return cache_db_file
+
+
+def clean_cache():
+    """
+    Removes the cache database file.
+    """
+    cache_db_file = get_cache_db_file()
+    if os.path.isfile(cache_db_file):
+        os.remove(cache_db_file)
+
+
+def init_cache_db(tmp_db_file):
+    """
+    Creates the database connection and creates the database tables.
+    Returns the database connection.
+    """
+    
+    db = sqlite3.connect(get_cache_db_file())
+    cursor = db.cursor()
+
+    # Create table AquoMetadataLijst
+    cursor.execute('''CREATE TABLE IF NOT EXISTS AquoMetadataLijst (
+        AquoMetadata_MessageID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Parameter_Wat_Omschrijving TEXT NOT NULL,
+        Compartiment_Code TEXT NOT NULL,
+        Compartiment_Omschrijving TEXT NOT NULL,
+        Grootheid_Code TEXT NOT NULL,
+        Grootheid_Omschrijving TEXT NOT NULL)
+        ''')
+    db.commit()
+
+    # Create table LocatieLijst
+    cursor.execute('''CREATE TABLE IF NOT EXISTS LocatieLijst (
+        Locatie_MessageID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Coordinatenstelsel INTEGER,
+        X REAL,
+        Y REAL,
+        Naam TEXT NOT NULL,
+        Code TEXT NOT NULL)
+        ''')
+    db.commit()
+
+    # Create table AquoMetadataLocatieLijst
+    cursor.execute('''CREATE TABLE IF NOT EXISTS AquoMetadataLocatieLijst (
+        AquoMetaData_MessageID INTEGER,
+        Locatie_MessageID INTEGER)
+        ''')
+    db.commit()
+
+    return db
+
+
+def update_cache():
+    """
+    Pulls a list of all available data from the API and returns it in json format
+    """
+
+    db = init_cache_db(get_cache_db_file())
+
+    print("Downloading catalog...")
+    url = "https://waterwebservices.rijkswaterstaat.nl/METADATASERVICES_DBO/OphalenCatalogus"
+    jsonbody = """{
+        "CatalogusFilter": {
+            "Compartimenten": true,
+            "Grootheden": true
+            }
+        }"""
+    catalog = post(url, json=json.loads(jsonbody)).json()
+    
+    cursor = db.cursor()
+
+    print("Updating metadata...")
+    cursor.execute("DELETE FROM AquoMetadataLijst;")
+    db.commit()
+    for item in catalog['AquoMetadataLijst']:
+        values = (
+            item['AquoMetadata_MessageID'],
+            item['Parameter_Wat_Omschrijving'],
+            item['Compartiment']['Code'],
+            item['Compartiment']['Omschrijving'],
+            item['Grootheid']['Code'],
+            item['Grootheid']['Omschrijving']
+        )
+        query = f"INSERT INTO AquoMetadataLijst (AquoMetadata_MessageID, Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving) VALUES (?, ?, ?, ?, ?, ?)"
+        cursor.execute(query, values)
+    db.commit()
+
+    print("Updating locations...")    
+    cursor.execute("DELETE FROM LocatieLijst;")
+    db.commit()
+    for item in catalog['LocatieLijst']:
+        values = (
+            item['Locatie_MessageID'],
+            item['Coordinatenstelsel'],
+            item['X'],
+            item['Y'],
+            item['Naam'],
+            item['Code']
+        )
+        query = f"INSERT INTO LocatieLijst (Locatie_MessageID, Coordinatenstelsel, X, Y, Naam, Code) VALUES (?, ?, ?, ?, ?, ?)"
+        cursor.execute(query, values)
+    db.commit()
+
+    print("Matching locations with metadata...")
+    cursor.execute("DELETE FROM AquoMetadataLocatieLijst;")
+    db.commit()
+    for item in catalog['AquoMetadataLocatieLijst']:    
+        values = (
+            item['AquoMetaData_MessageID'],
+            item['Locatie_MessageID']
+        )
+        query = f"INSERT INTO AquoMetadataLocatieLijst (AquoMetaData_MessageID, Locatie_MessageID) VALUES (?, ?)"
+        cursor.execute(query, values)
+    db.commit()
+
+    db.close()
+
+
+def list_cache(args):
+    db = init_cache_db(get_cache_db_file())
+    cursor = db.cursor()
+    
+    if args.category == 'locations':
+        print("Location (Name): Compartment_Code (Description) - Measure (Description)")
+        cursor.execute("SELECT Code, Naam, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID ORDER BY Code, Naam;")
+        for row in cursor.fetchall():
+            print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]} ({row[5]})")
+    elif args.category == 'measures':
+        print("Compartment_Code (Description): Measure (Description) - Note")
+        cursor.execute("SELECT Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving, Parameter_Wat_Omschrijving FROM AquoMetadataLijst ORDER BY Compartiment_Code, Grootheid_Code;")    
+        for row in cursor.fetchall():
+            print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
+    else:
+        print("Unknown category")
+    db.close()
+
+
+def parse_arguments():
+    """
+    Parses the command line arguments and returns the parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description='wtr - Rijkswaterstaat Waterinfo API client',
+        argument_default='get'
+        )
+    parser.add_argument('command',
+        choices=['clean', 'list', 'update'],
+        help='Command to execute',
+        )
+    parser.add_argument('-c', '--category',
+        default='locations',
+        help='Category to query: locations (default), measures',
+        )
+    parser.add_argument('-m', '--measure',
+        default='WATHTE',
+        help='Measure to query',
+        )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+       
+    args = parse_arguments()
+    if args.command == 'clean':
+        clean_cache()
+    elif args.command == 'list':
+        list_cache(args)
+    elif args.command == 'update':
+        update_cache()
