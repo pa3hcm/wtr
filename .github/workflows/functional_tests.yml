@@ -21,6 +21,6 @@ jobs:
         chmod 755 ./wtr
     - name: Analysing the code with pylint
       run: |
-        ./wtr list -c locations
-        ./wtr list -c measures
+        WTR_CACHE=./wtr.db ./wtr list -c locations
+        WTR_CACHE=./wtr.db ./wtr list -c measures
         WTR_CACHE=./wtr.db ./wtr observe -l CULB -m WATHTE
