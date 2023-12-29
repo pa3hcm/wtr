@@ -117,7 +117,7 @@ def update_cache():
             "Grootheden": true
             }
         }"""
-    catalog = post(url, json=json.loads(jsonbody)).json()
+    catalog = post(url, json=json.loads(jsonbody), timeout=60).json()
 
     cursor = db_conn.cursor()
 
@@ -215,7 +215,7 @@ def observe(arguments):
         generate_timestamp("now"),
     )
     observations = post(
-        url, json=json.loads(jsonbody), headers={"Content-Type": "application/json"}
+        url, json=json.loads(jsonbody), headers={"Content-Type": "application/json"}, timeout=60
     ).json()
 
     if observations["Succesvol"]:
