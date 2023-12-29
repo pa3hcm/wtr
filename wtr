@@ -15,7 +15,7 @@ import datetime
 from requests import post
 
 
-VERSION = "0.1b"
+VERSION = "0.2b"
 
 
 def get_cache_db_filename():
@@ -25,15 +25,6 @@ def get_cache_db_filename():
 
     cache_db_filename = "/tmp/.wtr_cache_" + os.getlogin() + ".db"
     return cache_db_filename
-
-
-def clean_cache():
-    """
-    Removes the cache database file.
-    """
-    cache_db_file = get_cache_db_filename()
-    if os.path.isfile(cache_db_file):
-        os.remove(cache_db_file)
 
 
 def generate_timestamp(moment):
@@ -352,17 +343,13 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
+    args = parse_arguments()
+
     if not os.path.isfile(get_cache_db_filename()):
         print("Caching metadata...")
         update_cache()
-
-    args = parse_arguments()
-    if args.command == "clean":
-        clean_cache()
-    elif args.command == "list":
+    
+    if args.command == "list":
         list_cache(args)
     elif args.command == "observe":
         observe(args)
-    elif args.command == "update":
-        print("Updating cache...")
-        update_cache()
