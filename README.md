@@ -1,6 +1,6 @@
 # wtr
 
-**wtr** will be a simple command line client for the Rijkswaterstaat Waterinfo API, allowing users to query all kinds of water measurements from the Netherlands in a convenient way.
+**wtr** is a simple command line client for the Rijkswaterstaat Waterinfo API, allowing users to query all kinds of water measurements from the Netherlands in a convenient way.
 
 All data is retrieved from the *WaterWebservices API*, which is described [here](https://rijkswaterstaatdata.nl/waterdata/) (in dutch). The data is published by [Rijkswaterstaat](https://www.rijkswaterstaat.nl/en), which is part of the dutch *Ministry of Infrastructure and Water Management*.
 
