@@ -42,10 +42,15 @@ def generate_timestamp(moment):
     """
 
     today = datetime.date.today()
-    if moment == "midnight":
+    if moment == "twodaysago":
         timestamp = datetime.datetime(
-            today.year, today.month, today.day, 0, 0, 0
-        ).isoformat()
+            today.year,
+            today.month,
+            today.day,
+            datetime.datetime.now().hour,
+            datetime.datetime.now().minute,
+            0) - datetime.timedelta(days=2)
+        timestamp = timestamp.isoformat()
     else:  # moment = 'now'
         timestamp = datetime.datetime(
             today.year,
@@ -214,7 +219,7 @@ def observe(arguments):
         location_data[2],
         measure_data[0],
         measure_data[1],
-        generate_timestamp("midnight"),
+        generate_timestamp("twodaysago"),
         generate_timestamp("now"),
     )
     observations = post(
