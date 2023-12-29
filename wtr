@@ -21,7 +21,7 @@ version = "0.1b"
 
 def get_cache_db_file():
     # Generate a file name for the cache database which is unique for the current user
-    cache_db_file = '/tmp/.wtr_cache_' + os.getlogin() + '.db'
+    cache_db_file = "/tmp/.wtr_cache_" + os.getlogin() + ".db"
     return cache_db_file
 
 
@@ -36,12 +36,20 @@ def clean_cache():
 
 def generate_timestamp(moment):
     today = datetime.date.today()
-    if moment == 'midnight':
-        timestamp = datetime.datetime(today.year, today.month, today.day, 0, 0, 0).isoformat()
+    if moment == "midnight":
+        timestamp = datetime.datetime(
+            today.year, today.month, today.day, 0, 0, 0
+        ).isoformat()
     else:  # moment = 'now'
-        timestamp = datetime.datetime(today.year, today.month, today.day, datetime.datetime.now().hour, datetime.datetime.now().minute, 0).isoformat()
+        timestamp = datetime.datetime(
+            today.year,
+            today.month,
+            today.day,
+            datetime.datetime.now().hour,
+            datetime.datetime.now().minute,
+            0,
+        ).isoformat()
     timestamp += ".000+01:00"
-    print(timestamp)
     return timestamp
 
 
@@ -50,40 +58,46 @@ def init_cache_db(tmp_db_file):
     Creates the database connection and creates the database tables when needed.
     Returns the database connection.
     """
-    
-    db = sqlite3.connect(get_cache_db_file())
-    cursor = db.cursor()
+
+    db_conn = sqlite3.connect(get_cache_db_file())
+    cursor = db_conn.cursor()
 
     # Create table AquoMetadataLijst
-    cursor.execute('''CREATE TABLE IF NOT EXISTS AquoMetadataLijst (
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS AquoMetadataLijst (
         AquoMetadata_MessageID INTEGER PRIMARY KEY AUTOINCREMENT,
         Parameter_Wat_Omschrijving TEXT NOT NULL,
         Compartiment_Code TEXT NOT NULL,
         Compartiment_Omschrijving TEXT NOT NULL,
         Grootheid_Code TEXT NOT NULL,
         Grootheid_Omschrijving TEXT NOT NULL)
-        ''')
-    db.commit()
+        """
+    )
+    db_conn.commit()
 
     # Create table LocatieLijst
-    cursor.execute('''CREATE TABLE IF NOT EXISTS LocatieLijst (
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS LocatieLijst (
         Locatie_MessageID INTEGER PRIMARY KEY AUTOINCREMENT,
         Coordinatenstelsel INTEGER,
         X TEXT NOT NULL,
         Y TEXT NOT NULL,
         Naam TEXT NOT NULL,
         Code TEXT NOT NULL)
-        ''')
-    db.commit()
+        """
+    )
+    db_conn.commit()
 
     # Create table AquoMetadataLocatieLijst
-    cursor.execute('''CREATE TABLE IF NOT EXISTS AquoMetadataLocatieLijst (
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS AquoMetadataLocatieLijst (
         AquoMetaData_MessageID INTEGER,
         Locatie_MessageID INTEGER)
-        ''')
-    db.commit()
+        """
+    )
+    db_conn.commit()
 
-    return db
+    return db_conn
 
 
 def update_cache():
@@ -91,7 +105,7 @@ def update_cache():
     Pulls a list of all available data from the API and returns it in json format.
     """
 
-    db = init_cache_db(get_cache_db_file())
+    db_conn = init_cache_db(get_cache_db_file())
 
     url = "https://waterwebservices.rijkswaterstaat.nl/METADATASERVICES_DBO/OphalenCatalogus"
     jsonbody = """{
@@ -101,51 +115,48 @@ def update_cache():
             }
         }"""
     catalog = post(url, json=json.loads(jsonbody)).json()
-    
-    cursor = db.cursor()
+
+    cursor = db_conn.cursor()
 
     cursor.execute("DELETE FROM AquoMetadataLijst;")
-    db.commit()
-    for item in catalog['AquoMetadataLijst']:
+    db_conn.commit()
+    for item in catalog["AquoMetadataLijst"]:
         values = (
-            item['AquoMetadata_MessageID'],
-            item['Parameter_Wat_Omschrijving'],
-            item['Compartiment']['Code'],
-            item['Compartiment']['Omschrijving'],
-            item['Grootheid']['Code'],
-            item['Grootheid']['Omschrijving']
+            item["AquoMetadata_MessageID"],
+            item["Parameter_Wat_Omschrijving"],
+            item["Compartiment"]["Code"],
+            item["Compartiment"]["Omschrijving"],
+            item["Grootheid"]["Code"],
+            item["Grootheid"]["Omschrijving"],
         )
         query = f"INSERT INTO AquoMetadataLijst (AquoMetadata_MessageID, Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving) VALUES (?, ?, ?, ?, ?, ?)"
         cursor.execute(query, values)
-    db.commit()
+    db_conn.commit()
 
     cursor.execute("DELETE FROM LocatieLijst;")
-    db.commit()
-    for item in catalog['LocatieLijst']:
+    db_conn.commit()
+    for item in catalog["LocatieLijst"]:
         values = (
-            item['Locatie_MessageID'],
-            item['Coordinatenstelsel'],
-            item['X'],
-            item['Y'],
-            item['Naam'],
-            item['Code']
+            item["Locatie_MessageID"],
+            item["Coordinatenstelsel"],
+            item["X"],
+            item["Y"],
+            item["Naam"],
+            item["Code"],
         )
         query = f"INSERT INTO LocatieLijst (Locatie_MessageID, Coordinatenstelsel, X, Y, Naam, Code) VALUES (?, ?, ?, ?, ?, ?)"
         cursor.execute(query, values)
-    db.commit()
+    db_conn.commit()
 
     cursor.execute("DELETE FROM AquoMetadataLocatieLijst;")
-    db.commit()
-    for item in catalog['AquoMetadataLocatieLijst']:    
-        values = (
-            item['AquoMetaData_MessageID'],
-            item['Locatie_MessageID']
-        )
+    db_conn.commit()
+    for item in catalog["AquoMetadataLocatieLijst"]:
+        values = (item["AquoMetaData_MessageID"], item["Locatie_MessageID"])
         query = f"INSERT INTO AquoMetadataLocatieLijst (AquoMetaData_MessageID, Locatie_MessageID) VALUES (?, ?)"
         cursor.execute(query, values)
-    db.commit()
+    db_conn.commit()
 
-    db.close()
+    db_conn.close()
 
 
 def observe(args):
@@ -153,31 +164,53 @@ def observe(args):
     Queries the API for the latest data for the given location and measure.
     """
 
-    db = init_cache_db(get_cache_db_file())
-    cursor = db.cursor()
+    db_conn = init_cache_db(get_cache_db_file())
+    cursor = db_conn.cursor()
 
     # Get the location id
-    cursor.execute(f"SELECT Code, X, Y, Naam FROM LocatieLijst WHERE Code = '{args.location}';")
+    cursor.execute(
+        f"SELECT Code, X, Y, Naam FROM LocatieLijst WHERE Code = '{args.location}';"
+    )
     location_data = cursor.fetchone()
-    
+
     # Get the measure id
-    cursor.execute(f"SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = '{args.measure}';")
+    cursor.execute(
+        f"SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = '{args.measure}';"
+    )
     measure_data = cursor.fetchone()
-    
+
     # Get measurements
-    midnight = generate_timestamp('midnight')
-    now = generate_timestamp('now')
+    midnight = generate_timestamp("midnight")
+    now = generate_timestamp("now")
     url = "https://waterwebservices.rijkswaterstaat.nl/ONLINEWAARNEMINGENSERVICES_DBO/OphalenWaarnemingen"
     jsonbody = """{"Locatie": {"Code": "%s", "X": %s, "Y": %s},
     "AquoPlusWaarnemingMetadata": {"AquoMetadata": {"Compartiment": {"Code": "%s"}, "Grootheid": {"Code": "%s"}}},
     "Periode": {"Begindatumtijd": "%s", "Einddatumtijd": "%s"}
-    }""" % (location_data[0], location_data[1], location_data[2], measure_data[0], measure_data[1], midnight, now)
-    observations = post(url, json=json.loads(jsonbody), headers={'Content-Type': 'application/json'}).json()
-    
-    if observations['Succesvol']:
-        if len(observations['WaarnemingenLijst'][0]['MetingenLijst']) > 0:
-            cursor.execute(f"SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = '{args.measure}';")
-            [what, comp_code, comp_descr, measure_code, measure_descr] = cursor.fetchone()
+    }""" % (
+        location_data[0],
+        location_data[1],
+        location_data[2],
+        measure_data[0],
+        measure_data[1],
+        midnight,
+        now,
+    )
+    observations = post(
+        url, json=json.loads(jsonbody), headers={"Content-Type": "application/json"}
+    ).json()
+
+    if observations["Succesvol"]:
+        if len(observations["WaarnemingenLijst"][0]["MetingenLijst"]) > 0:
+            cursor.execute(
+                f"SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = '{args.measure}';"
+            )
+            [
+                what,
+                comp_code,
+                comp_descr,
+                measure_code,
+                measure_descr,
+            ] = cursor.fetchone()
             if not args.no_headers:
                 print("#")
                 print(f"# Description: {what}")
@@ -186,17 +219,25 @@ def observe(args):
                 print(f"# Location: {location_data[0]} ({location_data[3]})")
                 print("#")
                 print("# Timestamp                      Value")
-                for item in observations['WaarnemingenLijst'][0]['MetingenLijst'][-int(args.rows):]:
-                    print(f"  {item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}")
+                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
+                    -int(args.rows) :
+                ]:
+                    print(
+                        f"  {item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
+                    )
             else:
-                for item in observations['WaarnemingenLijst'][0]['MetingenLijst'][-int(args.rows):]:
-                    print(f"{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}")
+                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
+                    -int(args.rows) :
+                ]:
+                    print(
+                        f"{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
+                    )
         else:
             print("No data available")
     else:
-        print("Error: " + observations['Foutmelding'])
+        print("Error: " + observations["Foutmelding"])
 
-    db.close()
+    db_conn.close()
 
 
 def list_cache(args):
@@ -204,22 +245,26 @@ def list_cache(args):
     Lists interesting objects from the catalog, based on the --category argument.
     """
 
-    db = init_cache_db(get_cache_db_file())
-    cursor = db.cursor()
-    
-    if args.category == 'locations':
+    db_conn = init_cache_db(get_cache_db_file())
+    cursor = db_conn.cursor()
+
+    if args.category == "locations":
         print("Location (Name): Compartment_Code (Description) - Measure (Description)")
-        cursor.execute("SELECT Code, Naam, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID ORDER BY Code, Naam;")
+        cursor.execute(
+            "SELECT Code, Naam, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID ORDER BY Code, Naam;"
+        )
         for row in cursor.fetchall():
             print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]} ({row[5]})")
-    elif args.category == 'measures':
+    elif args.category == "measures":
         print("Compartment_Code (Description): Measure (Description) - Note")
-        cursor.execute("SELECT Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving, Parameter_Wat_Omschrijving FROM AquoMetadataLijst ORDER BY Compartiment_Code, Grootheid_Code;")    
+        cursor.execute(
+            "SELECT Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving, Parameter_Wat_Omschrijving FROM AquoMetadataLijst ORDER BY Compartiment_Code, Grootheid_Code;"
+        )
         for row in cursor.fetchall():
             print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
     else:
         print("Unknown category")
-    db.close()
+    db_conn.close()
 
 
 def parse_arguments():
@@ -230,50 +275,61 @@ def parse_arguments():
     global version
 
     parser = argparse.ArgumentParser(
-        description='wtr - Rijkswaterstaat Waterinfo API client v' + version,
-        argument_default='get'
-        )
-    parser.add_argument('command',
-        choices=['clean', 'list', 'observe', 'update'],
-        help='Command to execute',
-        )
-    parser.add_argument('-c', '--category',
-        default='locations',
-        help='Category to query: locations (default), measures',
-        )
-    parser.add_argument('-l', '--location',
-        help='Filter by location code',
-        )
-    parser.add_argument('-m', '--measure',
-        default='WATHTE',
-        help='Measure to query (default WATHTE)',
-        )
-    parser.add_argument('-r', '--rows',
-        default='18',
-        help='Number of rows to show (default 18)',
-        )
-    parser.add_argument('--no-headers',
-        action='store_true',
+        description="wtr - Rijkswaterstaat Waterinfo API client v" + version + ".",
+        argument_default="get",
+        epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show 10 latest measures for the water height at location Culemborg:\n    wtr observe -l CULB -m WATHTE\n",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        "command",
+        choices=["clean", "list", "observe", "update"],
+        help="clean: clean the cache\nlist: list objects from the cache\nobserve: observe a location\nupdate: update the cache",
+    )
+    parser.add_argument(
+        "-c",
+        "--category",
+        default="locations",
+        help="Category to query: locations (default), measures",
+    )
+    parser.add_argument(
+        "-l",
+        "--location",
+        help="Filter by location code",
+    )
+    parser.add_argument(
+        "-m",
+        "--measure",
+        default="WATHTE",
+        help="Measure to query (default WATHTE)",
+    )
+    parser.add_argument(
+        "-r",
+        "--rows",
+        default="18",
+        help="Number of rows to show (default 18)",
+    )
+    parser.add_argument(
+        "--no-headers",
+        action="store_true",
         default=False,
-        help='Disable headers; just print the data',
-        )
-    
+        help="Disable headers; just print the data",
+    )
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-
     cache_db_file = get_cache_db_file()
     if not os.path.isfile(cache_db_file):
         update_cache()
 
     args = parse_arguments()
-    if args.command == 'clean':
+    if args.command == "clean":
         clean_cache()
-    elif args.command == 'list':
+    elif args.command == "list":
         list_cache(args)
-    elif args.command == 'observe':
+    elif args.command == "observe":
         observe(args)
-    elif args.command == 'update':
+    elif args.command == "update":
         print("Updating cache...")
         update_cache()
