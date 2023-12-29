@@ -40,7 +40,8 @@ def generate_timestamp(moment):
             today.day,
             datetime.datetime.now().hour,
             datetime.datetime.now().minute,
-            0) - datetime.timedelta(days=2)
+            0,
+        ) - datetime.timedelta(days=2)
         timestamp = timestamp.isoformat()
     else:  # moment = 'now'
         timestamp = datetime.datetime(
@@ -182,7 +183,7 @@ def observe(arguments):
     # Get the location id
     cursor.execute(
         f"SELECT Code, X, Y, Naam FROM LocatieLijst WHERE Code = '{arguments.location}';"
-        )
+    )
     location_data = cursor.fetchone()
 
     # Get the measure id
@@ -348,7 +349,7 @@ if __name__ == "__main__":
     if not os.path.isfile(get_cache_db_filename()):
         print("Caching metadata...")
         update_cache()
-    
+
     if args.command == "list":
         list_cache(args)
     elif args.command == "observe":
