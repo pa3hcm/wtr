@@ -307,8 +307,8 @@ def parse_arguments():
     )
     parser.add_argument(
         "command",
-        choices=["clean", "list", "observe", "update"],
-        help="clean: clean the cache\nlist: list objects from the cache\nobserve: observe a location\nupdate: update the cache",
+        choices=["list", "observe"],
+        help="list: list objects from the cache\nobserve: observe a location",
     )
     parser.add_argument(
         "-c",
