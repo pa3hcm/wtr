@@ -23,4 +23,4 @@ jobs:
       run: |
         ./wtr list -c locations
         ./wtr list -c measures
-        ./wtr observe -l CULB -m WATHTE
+        WTR_CACHE=./wtr.db ./wtr observe -l CULB -m WATHTE

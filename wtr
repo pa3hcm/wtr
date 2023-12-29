@@ -22,8 +22,10 @@ def get_cache_db_filename():
     """
     Generate a file name for the cache database which is unique for the current user
     """
-
-    cache_db_filename = "/tmp/.wtr_cache_" + os.getlogin() + ".db"
+    if (os.environ.get('WTR_CACHE') is not None):
+        cache_db_filename = os.environ.get('WTR_CACHE')
+    else:
+        cache_db_filename = "/tmp/.wtr_cache_" + os.getlogin() + ".db"
     return cache_db_filename
 
 
