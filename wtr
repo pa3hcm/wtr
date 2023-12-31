@@ -243,35 +243,35 @@ def list_cache(arguments):
     Lists interesting objects from the catalog, based on the --category argument.
     """
 
-    with init_cache_db() as db_conn:
-        cursor = db_conn.cursor()
+    db_conn = init_cache_db()
+    cursor = db_conn.cursor()
 
-        if arguments.category == "locations":
-            print("Location (Name): Compartment_Code (Description) - Measure (Description)")
-            query = """
-                SELECT Code, Naam, Compartiment_Code, Compartiment_Omschrijving,
-                    Grootheid_Code, Grootheid_Omschrijving
-                FROM AquoMetadataLijst
-                INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID
-                INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID
-                ORDER BY Code, Naam;
-            """
-            cursor.execute(query)
-            for row in cursor.fetchall():
-                print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]} ({row[5]})")
-        elif arguments.category == "measures":
-            print("Compartment_Code (Description): Measure (Description) - Note")
-            query = """
-                SELECT Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code,
-                    Grootheid_Omschrijving, Parameter_Wat_Omschrijving
-                FROM AquoMetadataLijst
-                ORDER BY Compartiment_Code, Grootheid_Code;
-            """
-            cursor.execute(query)
-            for row in cursor.fetchall():
-                print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
-        else:
-            print("Unknown category")
+    if arguments.category == "locations":
+        print("Location (Name): Compartment_Code (Description) - Measure (Description)")
+        query = """
+            SELECT Code, Naam, Compartiment_Code, Compartiment_Omschrijving,
+                Grootheid_Code, Grootheid_Omschrijving
+            FROM AquoMetadataLijst
+            INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID
+            INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID
+            ORDER BY Code, Naam;
+        """
+        cursor.execute(query)
+        for row in cursor.fetchall():
+            print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]} ({row[5]})")
+    elif arguments.category == "measures":
+        print("Compartment_Code (Description): Measure (Description) - Note")
+        query = """
+            SELECT Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code,
+                Grootheid_Omschrijving, Parameter_Wat_Omschrijving
+            FROM AquoMetadataLijst
+            ORDER BY Compartiment_Code, Grootheid_Code;
+        """
+        cursor.execute(query)
+        for row in cursor.fetchall():
+            print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
+    else:
+        print("Unknown category")
 
 
 def parse_arguments():
@@ -319,7 +319,7 @@ def parse_arguments():
         default=False,
         help="Disable headers; just print the data",
     )
-
+    
     return parser.parse_args()
 
 
