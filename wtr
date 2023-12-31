@@ -319,7 +319,7 @@ def parse_arguments():
         default=False,
         help="Disable headers; just print the data",
     )
-    
+
     return parser.parse_args()
 
 
