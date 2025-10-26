@@ -108,7 +108,7 @@ Notes:
 
 Lots of metadata is cached in a small SQLite database. This database is stored in `/tmp`, the filename is `.wtr_cache_<username>.db`. The database is created whenever you run `wtr` for the first time.
 
-Since the metadata gets updated sometimes, it is a good plan to update this cache once in a while. To do so, simply remove the cache file.
+Since the metadata gets updated sometimes, it is a good plan to update this cache once in a while. To do so, run `wtr update` or remove the cache file.
 
 
 ## About this project

@@ -15,7 +15,7 @@ import datetime
 from requests import post
 
 
-VERSION = "0.3b"
+VERSION = "0.4b"
 
 
 def get_cache_db_filename():
@@ -101,7 +101,6 @@ def update_cache():
             }
         }"""
     catalog = post(url, json=json.loads(jsonbody), timeout=60).json()
-
     cursor = db_conn.cursor()
 
     cursor.execute("DELETE FROM AquoMetadataLijst;")
@@ -124,18 +123,19 @@ def update_cache():
             VALUES (?, ?, ?, ?, ?, ?)""", values)
 
     for item in catalog["LocatieLijst"]:
-        values = (
-            item["Locatie_MessageID"],
-            item["Coordinatenstelsel"],
-            item["X"],
-            item["Y"],
-            item["Naam"],
-            item["Code"],
-        )
-        cursor.execute("""
-            INSERT INTO LocatieLijst
-            (Locatie_MessageID, Coordinatenstelsel, X, Y, Naam, Code)
-            VALUES (?, ?, ?, ?, ?, ?)""", values)
+        if str(item["X"])[::-1].find('.') <= 3:  # skip obsolete locations, identified by more than 3 decimals in their coordinates
+            values = (
+                item["Locatie_MessageID"],
+                item["Coordinatenstelsel"],
+                item["X"],
+                item["Y"],
+                item["Naam"],
+                item["Code"],
+            )
+            cursor.execute("""
+                INSERT INTO LocatieLijst
+                (Locatie_MessageID, Coordinatenstelsel, X, Y, Naam, Code)
+                VALUES (?, ?, ?, ?, ?, ?)""", values)
 
     for item in catalog["AquoMetadataLocatieLijst"]:
         values = (item["AquoMetaData_MessageID"], item["Locatie_MessageID"])
@@ -156,7 +156,7 @@ def observe(arguments):
     db_conn = init_cache_db()
     cursor = db_conn.cursor()
 
-    # Get the location id
+        # Get the location id
     cursor.execute(
         f"SELECT Code, X, Y, Naam FROM LocatieLijst WHERE Code = '{arguments.location}';"
     )
@@ -287,8 +287,8 @@ def parse_arguments():
     )
     parser.add_argument(
         "command",
-        choices=["list", "observe"],
-        help="list: list objects from the cache\nobserve: observe a location",
+        choices=["list", "observe", "update"],
+        help="list: list objects from the cache\nobserve: observe a location\nupdate: updates the metadata cache",
     )
     parser.add_argument(
         "-c",
@@ -334,3 +334,6 @@ if __name__ == "__main__":
         list_cache(args)
     elif args.command == "observe":
         observe(args)
+    elif args.command == "update":
+        print("Updating metadata...")
+        update_cache()
