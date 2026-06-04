@@ -15,7 +15,7 @@ import datetime
 from requests import post
 
 
-VERSION = "0.5b"
+VERSION = "v0.5b"
 API = "https://ddapi20-waterwebservices.rijkswaterstaat.nl/"
 
 
