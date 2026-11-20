@@ -16,7 +16,7 @@ import datetime
 import requests
 
 
-VERSION = "v0.5b"
+VERSION = "v0.6b"
 API = "https://ddapi20-waterwebservices.rijkswaterstaat.nl/"
 CACHE_MAX_AGE_DAYS = 30
 
