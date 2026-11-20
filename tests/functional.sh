@@ -171,6 +171,8 @@ begin "observe -l culemborg (default measure WATHTE, 18 rows)"
 run observe -l culemborg
 expect_exit 0
 expect_out "# Location: culemborg (Culemborg)"
+expect_out "# Description: Waterhoogte in Oppervlaktewater t.o.v. Normaal Amsterdams Peil in cm"
+expect_out "# Compartment: OW (Oppervlaktewater)"
 expect_out "# Measure: WATHTE (Waterhoogte)"
 expect_out "# Timestamp                      Value"
 expect_rows 1 18 "^  $ROW_RE\$"
@@ -196,15 +198,44 @@ expect_no_out "#"
 expect_rows 1 3 "^$ROW_RE\$"
 end
 
-begin "observe -m T (data may be unavailable)"
-run observe -l culemborg -m T -r 3
-expect_exit 0
-if grep -qF "No data available" <<<"$OUT"; then
-    echo "      note: no live data for measure T at culemborg"
-else
-    expect_out "# Measure: T ("
-    expect_rows 1 3 "^  $ROW_RE\$"
-fi
+# expect_data_or_none <location> <compartment line> <max rows>: live data can be
+# missing for less common measures; when there is data, check header and rows.
+expect_data_or_none() {
+    expect_exit 0
+    if grep -qF "No data available" <<<"$OUT"; then
+        echo "      note: no live data for this measure at $1"
+    else
+        expect_out "$2"
+        expect_rows 1 "$3" "^  $ROW_RE\$"
+    fi
+}
+
+begin "observe -m T defaults to surface water (OW)"
+run observe -l hoekvanholland -m T -r 3
+expect_data_or_none hoekvanholland "# Compartment: OW (Oppervlaktewater)" 3
+end
+
+begin "observe -m T --compartment LT (air)"
+run observe -l hoekvanholland -m T --compartment LT -r 3
+expect_data_or_none hoekvanholland "# Compartment: LT (Lucht)" 3
+end
+
+begin "observe --compartment not available at the location"
+run observe -l culemborg -m T --compartment LT
+expect_exit 1
+expect_err "compartment 'LT' is not available for measure 'T' at location 'culemborg' (available: OW)"
+end
+
+begin "observe with a measure not available at the location"
+run observe -l culemborg -m D50
+expect_exit 1
+expect_err "measure 'D50' is not available at location 'culemborg'"
+end
+
+begin "observe with a measure in several compartments and no OW"
+run observe -l ameland.70kmuitdekust -m D50
+expect_exit 1
+expect_err "choose one with --compartment (BS, NT)"
 end
 
 begin "observe with an unknown location"

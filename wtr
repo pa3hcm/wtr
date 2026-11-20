@@ -162,91 +162,118 @@ def observe(arguments):
         db_conn.close()
         sys.exit(f"Error: unknown location '{arguments.location}' (see: wtr list -c locations)")
 
-    # Get the measure id
-    cursor.execute(
-        "SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = ?;",
-        (arguments.measure,),
-    )
-    measure_data = cursor.fetchone()
-    if measure_data is None:
-        db_conn.close()
-        sys.exit(f"Error: unknown measure '{arguments.measure}' (see: wtr list -c measures)")
+    compartment = select_compartment(cursor, arguments)
+    db_conn.close()
 
     # Get measurements
     url = API + "ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen"
-    jsonbody = """
-        {"Locatie": {
-            "Code": "%s"
-        },
+    request_body = {
+        "Locatie": {"Code": location_data[0]},
         "AquoPlusWaarnemingMetadata": {
             "AquoMetadata": {
-                "Compartiment": {"Code": "%s"},
-                "Grootheid": {"Code": "%s"}
+                "Compartiment": {"Code": compartment},
+                "Grootheid": {"Code": arguments.measure},
             }
         },
-        "Periode": {"Begindatumtijd": "%s", "Einddatumtijd": "%s"}
-        }""" % (
-        location_data[0],
-        measure_data[0],
-        measure_data[1],
-        generate_timestamp("twodaysago"),
-        generate_timestamp("now"),
-    )
-    response = post(
-        url,
-        json=json.loads(jsonbody),
-        headers={"Content-Type": "application/json"},
-        timeout=60,
-    )
+        "Periode": {
+            "Begindatumtijd": generate_timestamp("twodaysago"),
+            "Einddatumtijd": generate_timestamp("now"),
+        },
+    }
+    response = post(url, json=request_body, timeout=60)
 
     # The API answers "204 No Content" with an empty body when there are no measurements
     if response.status_code == 204 or not response.content:
         print("No data available")
-        db_conn.close()
         return
 
     observations = response.json()
-
-    if observations["Succesvol"]:
-        if len(observations["WaarnemingenLijst"][0]["MetingenLijst"]) > 0:
-            cursor.execute(
-                "SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = ?;",
-                (arguments.measure,),
-            )
-            [
-                what,
-                comp_code,
-                comp_descr,
-                measure_code,
-                measure_descr,
-            ] = cursor.fetchone()
-            if not arguments.no_headers:
-                print("#")
-                print(f"# Description: {what}")
-                print(f"# Compartment: {comp_code} ({comp_descr})")
-                print(f"# Measure: {measure_code} ({measure_descr})")
-                print(f"# Location: {location_data[0]} ({location_data[1]})")
-                print("#")
-                print("# Timestamp                      Value")
-                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -arguments.rows :
-                ]:
-                    print(
-                        f"  {item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
-                    )
-            else:
-                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -arguments.rows :
-                ]:
-                    print(
-                        f"{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
-                    )
-        else:
-            print("No data available")
-    else:
+    if not observations["Succesvol"]:
         print("Error: " + observations["Foutmelding"])
+        return
 
-    db_conn.close()
+    series = select_series(observations["WaarnemingenLijst"])
+    if series is None:
+        print("No data available")
+        return
+
+    metadata = series["AquoMetadata"]
+    indent = ""
+    if not arguments.no_headers:
+        indent = "  "
+        print("#")
+        print(f"# Description: {metadata['Parameter_Wat_Omschrijving']}")
+        print(f"# Compartment: {metadata['Compartiment']['Code']} ({metadata['Compartiment']['Omschrijving']})")
+        print(f"# Measure: {metadata['Grootheid']['Code']} ({metadata['Grootheid']['Omschrijving']})")
+        print(f"# Location: {location_data[0]} ({location_data[1]})")
+        print("#")
+        print("# Timestamp                      Value")
+    for item in series["MetingenLijst"][-arguments.rows :]:
+        print(f"{indent}{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}")
+
+
+def select_compartment(cursor, arguments):
+    """
+    Chooses the compartment to query for the given location and measure. Many measures
+    exist in more than one compartment (e.g. T: air and surface water). Prefers the
+    --compartment argument, then surface water (OW), then the only one available.
+    Exits with an error when the measure is not available at the location.
+    """
+
+    cursor.execute(
+        """
+        SELECT DISTINCT AquoMetadataLijst.Compartiment_Code
+        FROM AquoMetadataLijst
+        INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID
+        INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID
+        WHERE LocatieLijst.Code = ? AND AquoMetadataLijst.Grootheid_Code = ?
+        ORDER BY AquoMetadataLijst.Compartiment_Code;
+        """,
+        (arguments.location, arguments.measure),
+    )
+    available = [row[0] for row in cursor.fetchall()]
+
+    if not available:
+        cursor.execute(
+            "SELECT 1 FROM AquoMetadataLijst WHERE Grootheid_Code = ?;", (arguments.measure,)
+        )
+        if cursor.fetchone() is None:
+            sys.exit(f"Error: unknown measure '{arguments.measure}' (see: wtr list -c measures)")
+        sys.exit(
+            f"Error: measure '{arguments.measure}' is not available at location "
+            f"'{arguments.location}' (see: wtr list -c locations)"
+        )
+
+    if arguments.compartment:
+        if arguments.compartment not in available:
+            sys.exit(
+                f"Error: compartment '{arguments.compartment}' is not available for measure "
+                f"'{arguments.measure}' at location '{arguments.location}' "
+                f"(available: {', '.join(available)})"
+            )
+        return arguments.compartment
+    if "OW" in available:
+        return "OW"
+    if len(available) == 1:
+        return available[0]
+    sys.exit(
+        f"Error: measure '{arguments.measure}' exists in several compartments at location "
+        f"'{arguments.location}'; choose one with --compartment ({', '.join(available)})"
+    )
+
+
+def select_series(series_list):
+    """
+    Picks the series to show from the API reply. The API can return several series for
+    the same measure, e.g. measurements ('meting') and forecasts ('verwachting').
+    Prefers measurements; returns None when no series contains data.
+    """
+
+    with_data = [series for series in series_list if series["MetingenLijst"]]
+    for series in with_data:
+        if series["AquoMetadata"].get("ProcesType") == "meting":
+            return series
+    return with_data[0] if with_data else None
 
 
 def list_cache(arguments):
@@ -316,6 +343,10 @@ def parse_arguments():
         "--measure",
         default="WATHTE",
         help="Measure to query (default WATHTE)",
+    )
+    parser.add_argument(
+        "--compartment",
+        help="Compartment to query, e.g. OW (surface water) or LT (air);\ndefault: OW when available at the location",
     )
     parser.add_argument(
         "-r",
