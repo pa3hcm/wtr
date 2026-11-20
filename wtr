@@ -7,24 +7,71 @@ https://rijkswaterstaatdata.nl/waterdata/
 """
 
 
-import json
+import getpass
 import os
 import sqlite3
 import sys
 import argparse
 import datetime
-from requests import post
+import requests
 
 
 VERSION = "v0.5b"
 API = "https://ddapi20-waterwebservices.rijkswaterstaat.nl/"
+CACHE_MAX_AGE_DAYS = 30
+
+
+class ApiError(Exception):
+    """
+    Raised when the API cannot be reached or gives an unusable reply.
+    """
+
+
+def api_post(service, body):
+    """
+    Posts a request to the given API service and returns the decoded JSON reply,
+    or None when the API has no data ("204 No Content"). Raises ApiError on
+    network errors, HTTP errors and invalid replies.
+    """
+
+    try:
+        response = requests.post(API + service, json=body, timeout=60)
+    except requests.RequestException as error:
+        raise ApiError(f"could not reach the Rijkswaterstaat API ({error})") from error
+
+    if not response.ok:
+        raise ApiError(
+            f"the Rijkswaterstaat API returned HTTP {response.status_code}"
+            + (f": {api_error_message(response)}" if api_error_message(response) else "")
+        )
+    if response.status_code == 204 or not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError as error:
+        raise ApiError("the Rijkswaterstaat API returned an invalid reply") from error
+
+
+def api_error_message(response):
+    """
+    Extracts a readable message from an API error reply, which is either plain text
+    or a JSON object with one message per field.
+    """
+
+    try:
+        reply = response.json()
+    except ValueError:
+        return response.text.strip()[:300]
+    if isinstance(reply, dict):
+        return "; ".join(str(value) for value in reply.values())
+    return str(reply)[:300]
 
 
 def get_cache_db_filename():
     """
     Generate a file name for the cache database which is unique for the current user
     """
-    cache_db_filename = os.environ.get("WTR_CACHE") or f"/tmp/.wtr_cache_{os.getlogin()}.db"
+    cache_db_filename = os.environ.get("WTR_CACHE") or f"/tmp/.wtr_cache_{getpass.getuser()}.db"
     return cache_db_filename
 
 
@@ -41,13 +88,13 @@ def generate_timestamp(moment):
     return timestamp.isoformat(timespec="milliseconds")
 
 
-def init_cache_db():
+def init_cache_db(filename=None):
     """
-    Creates the database connection and creates the database tables when needed.
-    Returns the database connection.
+    Creates the database connection (by default to the cache database) and creates
+    the database tables when needed. Returns the database connection.
     """
 
-    db_conn = sqlite3.connect(get_cache_db_filename())
+    db_conn = sqlite3.connect(filename or get_cache_db_filename())
     cursor = db_conn.cursor()
 
     # Create table AquoMetadataLijst
@@ -80,26 +127,83 @@ def init_cache_db():
         """
     )
 
+    # Create table CacheInfo, holds e.g. the time of the last update
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS CacheInfo (
+        Key TEXT PRIMARY KEY,
+        Value TEXT NOT NULL)
+        """
+    )
+
     db_conn.commit()
 
     return db_conn
 
 
+def cache_status():
+    """
+    Returns the state of the cache database: 'missing' (no file, or no usable data),
+    'old' (older than CACHE_MAX_AGE_DAYS, or of unknown age) or 'ok'.
+    """
+
+    filename = get_cache_db_filename()
+    if not os.path.isfile(filename):
+        return "missing"
+    db_conn = sqlite3.connect(filename)
+    try:
+        try:
+            locations = db_conn.execute("SELECT COUNT(*) FROM LocatieLijst;").fetchone()[0]
+        except sqlite3.Error:
+            return "missing"
+        if locations == 0:
+            return "missing"
+        try:
+            updated = db_conn.execute("SELECT Value FROM CacheInfo WHERE Key = 'updated';").fetchone()
+        except sqlite3.Error:
+            updated = None  # cache made by an older wtr version, without CacheInfo
+    finally:
+        db_conn.close()
+
+    if updated is None:
+        return "old"
+    age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(updated[0])
+    return "old" if age > datetime.timedelta(days=CACHE_MAX_AGE_DAYS) else "ok"
+
+
 def update_cache():
     """
-    Pulls a list of all available data from the API and returns it in json format.
+    Downloads the catalogue of all available data from the API and stores it in the
+    cache database. The new cache is built in a separate file that replaces the old
+    one only when it is complete, so a failed update never leaves a broken cache.
     """
 
-    db_conn = init_cache_db()
+    catalog = api_post(
+        "METADATASERVICES/OphalenCatalogus",
+        {"CatalogusFilter": {"Compartimenten": True, "Grootheden": True}},
+    )
+    lists = ("AquoMetadataLijst", "LocatieLijst", "AquoMetadataLocatieLijst")
+    if not isinstance(catalog, dict) or not all(catalog.get(name) for name in lists):
+        raise ApiError("the Rijkswaterstaat API returned an empty or incomplete catalogue")
 
-    url = API + "METADATASERVICES/OphalenCatalogus"
-    jsonbody = """{
-        "CatalogusFilter": {
-            "Compartimenten": true,
-            "Grootheden": true
-            }
-        }"""
-    catalog = post(url, json=json.loads(jsonbody), timeout=60).json()
+    filename = get_cache_db_filename()
+    new_filename = filename + ".new"
+    if os.path.exists(new_filename):
+        os.remove(new_filename)
+    db_conn = init_cache_db(new_filename)
+    try:
+        write_catalog(db_conn, catalog)
+    except (KeyError, TypeError) as error:
+        db_conn.close()
+        os.remove(new_filename)
+        raise ApiError(f"the catalogue from the Rijkswaterstaat API has an unexpected format ({error!r})") from error
+    db_conn.close()
+    os.replace(new_filename, filename)
+
+
+def write_catalog(db_conn, catalog):
+    """
+    Replaces the cached catalogue in one transaction.
+    """
 
     cursor = db_conn.cursor()
 
@@ -141,8 +245,11 @@ def update_cache():
             (AquoMetaData_MessageID, Locatie_MessageID)
             VALUES (?, ?)""", values)
 
+    cursor.execute(
+        "INSERT OR REPLACE INTO CacheInfo (Key, Value) VALUES ('updated', ?);",
+        (datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),),
+    )
     db_conn.commit()
-    db_conn.close()
 
 
 def observe(arguments):
@@ -166,7 +273,6 @@ def observe(arguments):
     db_conn.close()
 
     # Get measurements
-    url = API + "ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen"
     request_body = {
         "Locatie": {"Code": location_data[0]},
         "AquoPlusWaarnemingMetadata": {
@@ -180,19 +286,19 @@ def observe(arguments):
             "Einddatumtijd": generate_timestamp("now"),
         },
     }
-    response = post(url, json=request_body, timeout=60)
+    observations = api_post("ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen", request_body)
 
-    # The API answers "204 No Content" with an empty body when there are no measurements
-    if response.status_code == 204 or not response.content:
+    # The API answers "204 No Content" when there are no measurements
+    if observations is None:
         print("No data available")
         return
+    if not observations.get("Succesvol"):
+        raise ApiError(
+            "the Rijkswaterstaat API reported an error: "
+            + str(observations.get("Foutmelding") or "unknown error")
+        )
 
-    observations = response.json()
-    if not observations["Succesvol"]:
-        print("Error: " + observations["Foutmelding"])
-        return
-
-    series = select_series(observations["WaarnemingenLijst"])
+    series = select_series(observations.get("WaarnemingenLijst") or [])
     if series is None:
         print("No data available")
         return
@@ -308,8 +414,8 @@ def list_cache(arguments):
         cursor.execute(query)
         for row in cursor.fetchall():
             print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
-    else:
-        print("Unknown category")
+
+    db_conn.close()
 
 
 def parse_arguments():
@@ -330,6 +436,7 @@ def parse_arguments():
     parser.add_argument(
         "-c",
         "--category",
+        choices=["locations", "measures"],
         default="locations",
         help="Category to query: locations (default), measures",
     )
@@ -370,17 +477,37 @@ def parse_arguments():
     return arguments
 
 
+def prepare_cache(command):
+    """
+    Makes sure a usable cache exists before running the command. An old cache is
+    refreshed; when that fails, the old cache is used with a warning.
+    """
+
+    if command == "update":
+        print("Updating metadata...")
+        update_cache()
+        return
+
+    status = cache_status()
+    if status == "missing":
+        print("Caching metadata...")
+        update_cache()
+    elif status == "old":
+        print(f"Cache is older than {CACHE_MAX_AGE_DAYS} days, updating metadata...")
+        try:
+            update_cache()
+        except ApiError as error:
+            print(f"Warning: could not update the cache, using the old one: {error}", file=sys.stderr)
+
+
 if __name__ == "__main__":
     args = parse_arguments()
 
-    if not os.path.isfile(get_cache_db_filename()):
-        print("Caching metadata...")
-        update_cache()
-
-    if args.command == "list":
-        list_cache(args)
-    elif args.command == "observe":
-        observe(args)
-    elif args.command == "update":
-        print("Updating metadata...")
-        update_cache()
+    try:
+        prepare_cache(args.command)
+        if args.command == "list":
+            list_cache(args)
+        elif args.command == "observe":
+            observe(args)
+    except ApiError as api_error:
+        sys.exit(f"Error: {api_error}")

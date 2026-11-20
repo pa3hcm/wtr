@@ -141,14 +141,14 @@ If a measure exists in several compartments at a location and none of them is `O
 
 ## Exit codes
 
-wtr exits with code 1 for an unknown location, measure or compartment, 2 for invalid command line arguments, and 0 otherwise (also when there is no data).
+wtr exits with code 0 on success (also when there is no data), 1 for an unknown location, measure or compartment and for network or API errors, and 2 for invalid command line arguments. Error messages are written to stderr.
 
 
 ## Cache database
 
 Lots of metadata is cached in a small SQLite database. This database is stored in `/tmp`, the filename is `.wtr_cache_<username>.db`. The database is created whenever you run `wtr` for the first time. To use another location, set the `WTR_CACHE` environment variable, e.g. `WTR_CACHE=~/.cache/wtr.db wtr list`.
 
-Since the metadata gets updated sometimes, it is a good plan to update this cache once in a while. To do so, run `wtr update` or remove and recreate the cache file.
+The cache is refreshed automatically when it is older than 30 days. If that refresh fails, for example without network access, wtr shows a warning and keeps using the old cache. To refresh it manually, run `wtr update`. A failed update never damages the existing cache: the new cache is only put in place once it is complete.
 
 
 ## Testing

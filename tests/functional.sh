@@ -149,10 +149,10 @@ expect_out "Location (Name): Compartment_Code (Description) - Measure (Descripti
 expect_out "culemborg (Culemborg): OW (Oppervlaktewater) - WATHTE (Waterhoogte)"
 end
 
-begin "list -c with an unknown category"
+begin "list -c with an unknown category is rejected"
 run list -c foo
-expect_exit 0
-expect_out "Unknown category"
+expect_exit 2
+expect_err "invalid choice: 'foo'"
 end
 
 begin "update refreshes the cache"
@@ -254,6 +254,84 @@ begin "observe with an unknown measure"
 run observe -l culemborg -m NOPE
 expect_exit 1
 expect_err "unknown measure 'NOPE'"
+end
+
+#
+# Network failures and cache handling. A proxy on a closed local port makes
+# every API request fail with a connection error.
+#
+
+NO_NETWORK="http://127.0.0.1:9"
+
+# sql <database> <statement>: run a statement on a cache database
+sql() {
+    python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); print(*(r[0] for r in c.execute(sys.argv[2])), sep="\n"); c.commit()' "$1" "$2"
+}
+
+begin "first run without network fails cleanly and leaves no cache"
+WTR_CACHE="$WORKDIR/offline.db" HTTPS_PROXY="$NO_NETWORK" run list
+expect_exit 1
+expect_err "Error: could not reach the Rijkswaterstaat API"
+expect_no_out "Traceback"
+grep -qF "Traceback" <<<"$ERR" && fail "stderr contains a traceback"
+[ ! -e "$WORKDIR/offline.db" ] || fail "a cache file was created"
+end
+
+begin "observe without network fails cleanly"
+HTTPS_PROXY="$NO_NETWORK" run observe -l culemborg
+expect_exit 1
+expect_err "Error: could not reach the Rijkswaterstaat API"
+grep -qF "Traceback" <<<"$ERR" && fail "stderr contains a traceback"
+end
+
+begin "update without network keeps the existing cache"
+HTTPS_PROXY="$NO_NETWORK" run update
+expect_exit 1
+expect_err "Error: could not reach the Rijkswaterstaat API"
+run list -c locations
+expect_exit 0
+expect_no_out "Caching metadata..."
+expect_out "culemborg (Culemborg)"
+end
+
+begin "an empty cache file is rebuilt"
+sql "$WORKDIR/empty.db" "CREATE TABLE LocatieLijst (Code TEXT)" >/dev/null
+WTR_CACHE="$WORKDIR/empty.db" run list
+expect_exit 0
+expect_out "Caching metadata..."
+expect_out "culemborg (Culemborg)"
+end
+
+begin "update records the time of the update"
+UPDATED="$(sql "$WTR_CACHE" "SELECT Value FROM CacheInfo WHERE Key = 'updated'")"
+[[ "$UPDATED" == "$(date -u +%Y-%m-%d)T"* ]] || fail "unexpected update time: '$UPDATED'"
+end
+
+begin "a cache older than 30 days is refreshed"
+sql "$WTR_CACHE" "UPDATE CacheInfo SET Value = '2000-01-01T00:00:00+00:00' WHERE Key = 'updated'" >/dev/null
+run list -c measures
+expect_exit 0
+expect_out "Cache is older than 30 days, updating metadata..."
+expect_out "OW (Oppervlaktewater): WATHTE (Waterhoogte)"
+UPDATED="$(sql "$WTR_CACHE" "SELECT Value FROM CacheInfo WHERE Key = 'updated'")"
+[[ "$UPDATED" == "$(date -u +%Y-%m-%d)T"* ]] || fail "update time was not refreshed: '$UPDATED'"
+run list -c measures
+expect_no_out "updating metadata"
+end
+
+begin "a cache from an older wtr version (no update time) is refreshed"
+sql "$WTR_CACHE" "DROP TABLE CacheInfo" >/dev/null
+run list
+expect_exit 0
+expect_out "Cache is older than 30 days, updating metadata..."
+end
+
+begin "an old cache is still used when the refresh fails"
+sql "$WTR_CACHE" "UPDATE CacheInfo SET Value = '2000-01-01T00:00:00+00:00' WHERE Key = 'updated'" >/dev/null
+HTTPS_PROXY="$NO_NETWORK" run list -c locations
+expect_exit 0
+expect_err "Warning: could not update the cache, using the old one"
+expect_out "culemborg (Culemborg)"
 end
 
 echo
