@@ -319,7 +319,7 @@ def parse_arguments():
 
     parser = argparse.ArgumentParser(
         description="wtr - Rijkswaterstaat Waterinfo API client " + VERSION + ".",
-        epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show 10 latest measures for the water height at location Culemborg:\n    wtr observe -l culemborg -m WATHTE\n",
+        epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show the latest water height measurements at location Culemborg:\n    wtr observe -l culemborg -m WATHTE\n",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
