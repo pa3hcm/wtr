@@ -7,23 +7,71 @@ https://rijkswaterstaatdata.nl/waterdata/
 """
 
 
-import json
+import getpass
 import os
 import sqlite3
+import sys
 import argparse
 import datetime
-from requests import post
+import requests
 
 
 VERSION = "v0.5b"
 API = "https://ddapi20-waterwebservices.rijkswaterstaat.nl/"
+CACHE_MAX_AGE_DAYS = 30
+
+
+class ApiError(Exception):
+    """
+    Raised when the API cannot be reached or gives an unusable reply.
+    """
+
+
+def api_post(service, body):
+    """
+    Posts a request to the given API service and returns the decoded JSON reply,
+    or None when the API has no data ("204 No Content"). Raises ApiError on
+    network errors, HTTP errors and invalid replies.
+    """
+
+    try:
+        response = requests.post(API + service, json=body, timeout=60)
+    except requests.RequestException as error:
+        raise ApiError(f"could not reach the Rijkswaterstaat API ({error})") from error
+
+    if not response.ok:
+        raise ApiError(
+            f"the Rijkswaterstaat API returned HTTP {response.status_code}"
+            + (f": {api_error_message(response)}" if api_error_message(response) else "")
+        )
+    if response.status_code == 204 or not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError as error:
+        raise ApiError("the Rijkswaterstaat API returned an invalid reply") from error
+
+
+def api_error_message(response):
+    """
+    Extracts a readable message from an API error reply, which is either plain text
+    or a JSON object with one message per field.
+    """
+
+    try:
+        reply = response.json()
+    except ValueError:
+        return response.text.strip()[:300]
+    if isinstance(reply, dict):
+        return "; ".join(str(value) for value in reply.values())
+    return str(reply)[:300]
 
 
 def get_cache_db_filename():
     """
     Generate a file name for the cache database which is unique for the current user
     """
-    cache_db_filename = os.environ.get("WTR_CACHE") or f"/tmp/.wtr_cache_{os.getlogin()}.db"
+    cache_db_filename = os.environ.get("WTR_CACHE") or f"/tmp/.wtr_cache_{getpass.getuser()}.db"
     return cache_db_filename
 
 
@@ -32,22 +80,21 @@ def generate_timestamp(moment):
     Generates a timestamp for the given moment, formatted the way the API expects it.
     """
 
-    today = datetime.datetime.now().replace(second=0, microsecond=0)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
     if moment == "twodaysago":
-        timestamp = today - datetime.timedelta(days=2)
+        timestamp = now - datetime.timedelta(days=2)
     else:  # moment = 'now'
-        timestamp = today
-    timestamp = timestamp.isoformat() + ".000+01:00"
-    return timestamp
+        timestamp = now
+    return timestamp.isoformat(timespec="milliseconds")
 
 
-def init_cache_db():
+def init_cache_db(filename=None):
     """
-    Creates the database connection and creates the database tables when needed.
-    Returns the database connection.
+    Creates the database connection (by default to the cache database) and creates
+    the database tables when needed. Returns the database connection.
     """
 
-    db_conn = sqlite3.connect(get_cache_db_filename())
+    db_conn = sqlite3.connect(filename or get_cache_db_filename())
     cursor = db_conn.cursor()
 
     # Create table AquoMetadataLijst
@@ -80,26 +127,83 @@ def init_cache_db():
         """
     )
 
+    # Create table CacheInfo, holds e.g. the time of the last update
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS CacheInfo (
+        Key TEXT PRIMARY KEY,
+        Value TEXT NOT NULL)
+        """
+    )
+
     db_conn.commit()
 
     return db_conn
 
 
+def cache_status():
+    """
+    Returns the state of the cache database: 'missing' (no file, or no usable data),
+    'old' (older than CACHE_MAX_AGE_DAYS, or of unknown age) or 'ok'.
+    """
+
+    filename = get_cache_db_filename()
+    if not os.path.isfile(filename):
+        return "missing"
+    db_conn = sqlite3.connect(filename)
+    try:
+        try:
+            locations = db_conn.execute("SELECT COUNT(*) FROM LocatieLijst;").fetchone()[0]
+        except sqlite3.Error:
+            return "missing"
+        if locations == 0:
+            return "missing"
+        try:
+            updated = db_conn.execute("SELECT Value FROM CacheInfo WHERE Key = 'updated';").fetchone()
+        except sqlite3.Error:
+            updated = None  # cache made by an older wtr version, without CacheInfo
+    finally:
+        db_conn.close()
+
+    if updated is None:
+        return "old"
+    age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(updated[0])
+    return "old" if age > datetime.timedelta(days=CACHE_MAX_AGE_DAYS) else "ok"
+
+
 def update_cache():
     """
-    Pulls a list of all available data from the API and returns it in json format.
+    Downloads the catalogue of all available data from the API and stores it in the
+    cache database. The new cache is built in a separate file that replaces the old
+    one only when it is complete, so a failed update never leaves a broken cache.
     """
 
-    db_conn = init_cache_db()
+    catalog = api_post(
+        "METADATASERVICES/OphalenCatalogus",
+        {"CatalogusFilter": {"Compartimenten": True, "Grootheden": True}},
+    )
+    lists = ("AquoMetadataLijst", "LocatieLijst", "AquoMetadataLocatieLijst")
+    if not isinstance(catalog, dict) or not all(catalog.get(name) for name in lists):
+        raise ApiError("the Rijkswaterstaat API returned an empty or incomplete catalogue")
 
-    url = API + "METADATASERVICES/OphalenCatalogus"
-    jsonbody = """{
-        "CatalogusFilter": {
-            "Compartimenten": true,
-            "Grootheden": true
-            }
-        }"""
-    catalog = post(url, json=json.loads(jsonbody), timeout=60).json()
+    filename = get_cache_db_filename()
+    new_filename = filename + ".new"
+    if os.path.exists(new_filename):
+        os.remove(new_filename)
+    db_conn = init_cache_db(new_filename)
+    try:
+        write_catalog(db_conn, catalog)
+    except (KeyError, TypeError) as error:
+        db_conn.close()
+        os.remove(new_filename)
+        raise ApiError(f"the catalogue from the Rijkswaterstaat API has an unexpected format ({error!r})") from error
+    db_conn.close()
+    os.replace(new_filename, filename)
+
+
+def write_catalog(db_conn, catalog):
+    """
+    Replaces the cached catalogue in one transaction.
+    """
 
     cursor = db_conn.cursor()
 
@@ -141,8 +245,11 @@ def update_cache():
             (AquoMetaData_MessageID, Locatie_MessageID)
             VALUES (?, ?)""", values)
 
+    cursor.execute(
+        "INSERT OR REPLACE INTO CacheInfo (Key, Value) VALUES ('updated', ?);",
+        (datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),),
+    )
     db_conn.commit()
-    db_conn.close()
 
 
 def observe(arguments):
@@ -153,84 +260,126 @@ def observe(arguments):
     db_conn = init_cache_db()
     cursor = db_conn.cursor()
 
-        # Get the location id
+    # Get the location id
     cursor.execute(
-        f"SELECT Code, Naam FROM LocatieLijst WHERE Code = '{arguments.location}';"
+        "SELECT Code, Naam FROM LocatieLijst WHERE Code = ?;", (arguments.location,)
     )
     location_data = cursor.fetchone()
+    if location_data is None:
+        db_conn.close()
+        sys.exit(f"Error: unknown location '{arguments.location}' (see: wtr list -c locations)")
 
-    # Get the measure id
-    cursor.execute(
-        f"SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = '{arguments.measure}';"
-    )
-    measure_data = cursor.fetchone()
+    compartment = select_compartment(cursor, arguments)
+    db_conn.close()
 
     # Get measurements
-    url = API + "ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen"
-    jsonbody = """
-        {"Locatie": {
-            "Code": "%s"
-        },
+    request_body = {
+        "Locatie": {"Code": location_data[0]},
         "AquoPlusWaarnemingMetadata": {
             "AquoMetadata": {
-                "Compartiment": {"Code": "%s"},
-                "Grootheid": {"Code": "%s"}
+                "Compartiment": {"Code": compartment},
+                "Grootheid": {"Code": arguments.measure},
             }
         },
-        "Periode": {"Begindatumtijd": "%s", "Einddatumtijd": "%s"}
-        }""" % (
-        location_data[0],
-        measure_data[0],
-        measure_data[1],
-        generate_timestamp("twodaysago"),
-        generate_timestamp("now"),
+        "Periode": {
+            "Begindatumtijd": generate_timestamp("twodaysago"),
+            "Einddatumtijd": generate_timestamp("now"),
+        },
+    }
+    observations = api_post("ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen", request_body)
+
+    # The API answers "204 No Content" when there are no measurements
+    if observations is None:
+        print("No data available")
+        return
+    if not observations.get("Succesvol"):
+        raise ApiError(
+            "the Rijkswaterstaat API reported an error: "
+            + str(observations.get("Foutmelding") or "unknown error")
+        )
+
+    series = select_series(observations.get("WaarnemingenLijst") or [])
+    if series is None:
+        print("No data available")
+        return
+
+    metadata = series["AquoMetadata"]
+    indent = ""
+    if not arguments.no_headers:
+        indent = "  "
+        print("#")
+        print(f"# Description: {metadata['Parameter_Wat_Omschrijving']}")
+        print(f"# Compartment: {metadata['Compartiment']['Code']} ({metadata['Compartiment']['Omschrijving']})")
+        print(f"# Measure: {metadata['Grootheid']['Code']} ({metadata['Grootheid']['Omschrijving']})")
+        print(f"# Location: {location_data[0]} ({location_data[1]})")
+        print("#")
+        print("# Timestamp                      Value")
+    for item in series["MetingenLijst"][-arguments.rows :]:
+        print(f"{indent}{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}")
+
+
+def select_compartment(cursor, arguments):
+    """
+    Chooses the compartment to query for the given location and measure. Many measures
+    exist in more than one compartment (e.g. T: air and surface water). Prefers the
+    --compartment argument, then surface water (OW), then the only one available.
+    Exits with an error when the measure is not available at the location.
+    """
+
+    cursor.execute(
+        """
+        SELECT DISTINCT AquoMetadataLijst.Compartiment_Code
+        FROM AquoMetadataLijst
+        INNER JOIN AquoMetadataLocatieLijst ON AquoMetadataLijst.AquoMetadata_MessageID = AquoMetadataLocatieLijst.AquoMetaData_MessageID
+        INNER JOIN LocatieLijst ON AquoMetadataLocatieLijst.Locatie_MessageID = LocatieLijst.Locatie_MessageID
+        WHERE LocatieLijst.Code = ? AND AquoMetadataLijst.Grootheid_Code = ?
+        ORDER BY AquoMetadataLijst.Compartiment_Code;
+        """,
+        (arguments.location, arguments.measure),
     )
-    observations = post(
-        url,
-        json=json.loads(jsonbody),
-        headers={"Content-Type": "application/json"},
-        timeout=60,
-    ).json()
+    available = [row[0] for row in cursor.fetchall()]
 
-    if observations["Succesvol"]:
-        if len(observations["WaarnemingenLijst"][0]["MetingenLijst"]) > 0:
-            cursor.execute(
-                f"SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = '{arguments.measure}';"
+    if not available:
+        cursor.execute(
+            "SELECT 1 FROM AquoMetadataLijst WHERE Grootheid_Code = ?;", (arguments.measure,)
+        )
+        if cursor.fetchone() is None:
+            sys.exit(f"Error: unknown measure '{arguments.measure}' (see: wtr list -c measures)")
+        sys.exit(
+            f"Error: measure '{arguments.measure}' is not available at location "
+            f"'{arguments.location}' (see: wtr list -c locations)"
+        )
+
+    if arguments.compartment:
+        if arguments.compartment not in available:
+            sys.exit(
+                f"Error: compartment '{arguments.compartment}' is not available for measure "
+                f"'{arguments.measure}' at location '{arguments.location}' "
+                f"(available: {', '.join(available)})"
             )
-            [
-                what,
-                comp_code,
-                comp_descr,
-                measure_code,
-                measure_descr,
-            ] = cursor.fetchone()
-            if not arguments.no_headers:
-                print("#")
-                print(f"# Description: {what}")
-                print(f"# Compartment: {comp_code} ({comp_descr})")
-                print(f"# Measure: {measure_code} ({measure_descr})")
-                print(f"# Location: {location_data[0]} ({location_data[1]})")
-                print("#")
-                print("# Timestamp                      Value")
-                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -int(arguments.rows) :
-                ]:
-                    print(
-                        f"  {item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
-                    )
-            else:
-                for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -int(arguments.rows) :
-                ]:
-                    print(
-                        f"{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
-                    )
-        else:
-            print("No data available")
-    else:
-        print("Error: " + observations["Foutmelding"])
+        return arguments.compartment
+    if "OW" in available:
+        return "OW"
+    if len(available) == 1:
+        return available[0]
+    sys.exit(
+        f"Error: measure '{arguments.measure}' exists in several compartments at location "
+        f"'{arguments.location}'; choose one with --compartment ({', '.join(available)})"
+    )
 
-    db_conn.close()
+
+def select_series(series_list):
+    """
+    Picks the series to show from the API reply. The API can return several series for
+    the same measure, e.g. measurements ('meting') and forecasts ('verwachting').
+    Prefers measurements; returns None when no series contains data.
+    """
+
+    with_data = [series for series in series_list if series["MetingenLijst"]]
+    for series in with_data:
+        if series["AquoMetadata"].get("ProcesType") == "meting":
+            return series
+    return with_data[0] if with_data else None
 
 
 def list_cache(arguments):
@@ -265,8 +414,8 @@ def list_cache(arguments):
         cursor.execute(query)
         for row in cursor.fetchall():
             print(f"{row[0]} ({row[1]}): {row[2]} ({row[3]}) - {row[4]}")
-    else:
-        print("Unknown category")
+
+    db_conn.close()
 
 
 def parse_arguments():
@@ -275,9 +424,8 @@ def parse_arguments():
     """
 
     parser = argparse.ArgumentParser(
-        description="wtr - Rijkswaterstaat Waterinfo API client v" + VERSION + ".",
-        argument_default="get",
-        epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show 10 latest measures for the water height at location Culemborg:\n    wtr observe -l culemborg -m WATHTE\n",
+        description="wtr - Rijkswaterstaat Waterinfo API client " + VERSION + ".",
+        epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show the latest water height measurements at location Culemborg:\n    wtr observe -l culemborg -m WATHTE\n",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -288,6 +436,7 @@ def parse_arguments():
     parser.add_argument(
         "-c",
         "--category",
+        choices=["locations", "measures"],
         default="locations",
         help="Category to query: locations (default), measures",
     )
@@ -303,9 +452,14 @@ def parse_arguments():
         help="Measure to query (default WATHTE)",
     )
     parser.add_argument(
+        "--compartment",
+        help="Compartment to query, e.g. OW (surface water) or LT (air);\ndefault: OW when available at the location",
+    )
+    parser.add_argument(
         "-r",
         "--rows",
-        default="18",
+        type=int,
+        default=18,
         help="Number of rows to show (default 18)",
     )
     parser.add_argument(
@@ -315,20 +469,45 @@ def parse_arguments():
         help="Disable headers; just print the data",
     )
 
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if arguments.command == "observe" and not arguments.location:
+        parser.error("observe requires a location, e.g. -l culemborg")
+    if arguments.rows < 1:
+        parser.error("--rows must be 1 or more")
+    return arguments
+
+
+def prepare_cache(command):
+    """
+    Makes sure a usable cache exists before running the command. An old cache is
+    refreshed; when that fails, the old cache is used with a warning.
+    """
+
+    if command == "update":
+        print("Updating metadata...")
+        update_cache()
+        return
+
+    status = cache_status()
+    if status == "missing":
+        print("Caching metadata...")
+        update_cache()
+    elif status == "old":
+        print(f"Cache is older than {CACHE_MAX_AGE_DAYS} days, updating metadata...")
+        try:
+            update_cache()
+        except ApiError as error:
+            print(f"Warning: could not update the cache, using the old one: {error}", file=sys.stderr)
 
 
 if __name__ == "__main__":
     args = parse_arguments()
 
-    if not os.path.isfile(get_cache_db_filename()):
-        print("Caching metadata...")
-        update_cache()
-
-    if args.command == "list":
-        list_cache(args)
-    elif args.command == "observe":
-        observe(args)
-    elif args.command == "update":
-        print("Updating metadata...")
-        update_cache()
+    try:
+        prepare_cache(args.command)
+        if args.command == "list":
+            list_cache(args)
+        elif args.command == "observe":
+            observe(args)
+    except ApiError as api_error:
+        sys.exit(f"Error: {api_error}")
