@@ -10,6 +10,7 @@ https://rijkswaterstaatdata.nl/waterdata/
 import json
 import os
 import sqlite3
+import sys
 import argparse
 import datetime
 from requests import post
@@ -152,17 +153,24 @@ def observe(arguments):
     db_conn = init_cache_db()
     cursor = db_conn.cursor()
 
-        # Get the location id
+    # Get the location id
     cursor.execute(
-        f"SELECT Code, Naam FROM LocatieLijst WHERE Code = '{arguments.location}';"
+        "SELECT Code, Naam FROM LocatieLijst WHERE Code = ?;", (arguments.location,)
     )
     location_data = cursor.fetchone()
+    if location_data is None:
+        db_conn.close()
+        sys.exit(f"Error: unknown location '{arguments.location}' (see: wtr list -c locations)")
 
     # Get the measure id
     cursor.execute(
-        f"SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = '{arguments.measure}';"
+        "SELECT Compartiment_Code, Grootheid_Code FROM AquoMetadataLijst WHERE Grootheid_Code = ?;",
+        (arguments.measure,),
     )
     measure_data = cursor.fetchone()
+    if measure_data is None:
+        db_conn.close()
+        sys.exit(f"Error: unknown measure '{arguments.measure}' (see: wtr list -c measures)")
 
     # Get measurements
     url = API + "ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen"
@@ -184,17 +192,26 @@ def observe(arguments):
         generate_timestamp("twodaysago"),
         generate_timestamp("now"),
     )
-    observations = post(
+    response = post(
         url,
         json=json.loads(jsonbody),
         headers={"Content-Type": "application/json"},
         timeout=60,
-    ).json()
+    )
+
+    # The API answers "204 No Content" with an empty body when there are no measurements
+    if response.status_code == 204 or not response.content:
+        print("No data available")
+        db_conn.close()
+        return
+
+    observations = response.json()
 
     if observations["Succesvol"]:
         if len(observations["WaarnemingenLijst"][0]["MetingenLijst"]) > 0:
             cursor.execute(
-                f"SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = '{arguments.measure}';"
+                "SELECT Parameter_Wat_Omschrijving, Compartiment_Code, Compartiment_Omschrijving, Grootheid_Code, Grootheid_Omschrijving FROM AquoMetadataLijst WHERE Grootheid_Code = ?;",
+                (arguments.measure,),
             )
             [
                 what,
@@ -212,14 +229,14 @@ def observe(arguments):
                 print("#")
                 print("# Timestamp                      Value")
                 for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -int(arguments.rows) :
+                    -arguments.rows :
                 ]:
                     print(
                         f"  {item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
                     )
             else:
                 for item in observations["WaarnemingenLijst"][0]["MetingenLijst"][
-                    -int(arguments.rows) :
+                    -arguments.rows :
                 ]:
                     print(
                         f"{item['Tijdstip']}  {item['Meetwaarde']['Waarde_Numeriek']}"
@@ -303,7 +320,8 @@ def parse_arguments():
     parser.add_argument(
         "-r",
         "--rows",
-        default="18",
+        type=int,
+        default=18,
         help="Number of rows to show (default 18)",
     )
     parser.add_argument(
@@ -316,6 +334,8 @@ def parse_arguments():
     arguments = parser.parse_args()
     if arguments.command == "observe" and not arguments.location:
         parser.error("observe requires a location, e.g. -l culemborg")
+    if arguments.rows < 1:
+        parser.error("--rows must be 1 or more")
     return arguments
 
 
