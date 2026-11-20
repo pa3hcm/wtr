@@ -32,13 +32,12 @@ def generate_timestamp(moment):
     Generates a timestamp for the given moment, formatted the way the API expects it.
     """
 
-    today = datetime.datetime.now().replace(second=0, microsecond=0)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
     if moment == "twodaysago":
-        timestamp = today - datetime.timedelta(days=2)
+        timestamp = now - datetime.timedelta(days=2)
     else:  # moment = 'now'
-        timestamp = today
-    timestamp = timestamp.isoformat() + ".000+01:00"
-    return timestamp
+        timestamp = now
+    return timestamp.isoformat(timespec="milliseconds")
 
 
 def init_cache_db():
@@ -275,8 +274,7 @@ def parse_arguments():
     """
 
     parser = argparse.ArgumentParser(
-        description="wtr - Rijkswaterstaat Waterinfo API client v" + VERSION + ".",
-        argument_default="get",
+        description="wtr - Rijkswaterstaat Waterinfo API client " + VERSION + ".",
         epilog="Examples:\n  List of locations:\n    wtr list -c locations\n  Show 10 latest measures for the water height at location Culemborg:\n    wtr observe -l culemborg -m WATHTE\n",
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -315,7 +313,10 @@ def parse_arguments():
         help="Disable headers; just print the data",
     )
 
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if arguments.command == "observe" and not arguments.location:
+        parser.error("observe requires a location, e.g. -l culemborg")
+    return arguments
 
 
 if __name__ == "__main__":
